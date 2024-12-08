@@ -1,0 +1,118 @@
+#include <ESP8266WiFi.h>
+#include <PubSubClient.h>
+#include <WiFiClientSecure.h>
+#include <ArduinoJson.h>
+#include "DHT.h"
+
+
+// WiFi
+const char *ssid = "TheLight"; // Tên WiFi của bạn
+const char *password = "20022003";  // Mật khẩu WiFi của bạn
+
+// MQTT Broker
+const char *topic = "cq21/NT532.O21.1/nhom2/dht/value";
+const char *topicrec = "cq21/NT532.O21.1/nhom2/dht/detected";
+const char *mqtt_broker = "269cddc81f3446da8c939add434498cf.s1.eu.hivemq.cloud";
+const char *mqtt_username = "hive_thanhdang";
+const char *mqtt_password = "ThanhDang123";
+const int mqtt_port = 8883;
+
+const int DHTPIN = 5;
+const int DHTTYPE = DHT22; 
+#define MQ7_ANALOG_PIN A0 
+int buzzer = 0;
+ 
+DHT dht(DHTPIN, DHTTYPE);
+const int led = 16;
+bool state = false;
+int lastPostTime = 0;
+const unsigned long post_interval = 10000; 
+
+WiFiClientSecure espClient;
+PubSubClient client(espClient);
+
+void setup() {
+  Serial.begin(9600);
+  WiFi.begin(ssid, password);
+  Serial.println("Connecting to WiFi...");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nConnected to the WiFi network");
+
+  // Set CA certificate
+  espClient.setInsecure();
+
+  // Set MQTT broker and callback
+  client.setServer(mqtt_broker, mqtt_port);
+  client.setCallback(callback);
+
+  // Connect to MQTT broker
+  while (!client.connected()) {
+    if (client.connect("ESP8266Client", mqtt_username, mqtt_password)) {
+        Serial.println("Connected to MQTT broker");
+        client.subscribe(topic);
+        client.subscribe(topicrec);
+    } else {
+      Serial.print("Failed to connect to MQTT broker, rc =");
+      Serial.print(client.state());
+      Serial.println(" retrying in 5 seconds");
+      delay(5000);
+    }
+  }
+    dht.begin();    
+  pinMode(led, OUTPUT);
+  pinMode(buzzer, OUTPUT);
+}
+
+void callback(char *topicrec, byte *payload, unsigned int length) {
+    Serial.print("Message arrived in topic: ");
+    Serial.println(topicrec);
+    Serial.print("Message:");
+    for (int i = 0; i < length; i++) {
+        Serial.print((char)payload[i]);
+    }
+    Serial.println();
+    String data = "";
+    for (int i = 0; i < length; i++) {
+        data.concat((char)payload[i]);
+    }
+    DynamicJsonDocument doc(256);
+    DeserializationError error = deserializeJson(doc, data);
+    state = doc["state"];
+
+    Serial.println();
+    Serial.println("-----------------------");  
+}
+
+void loop() {
+  client.loop();
+    // if (state)
+    // {
+    //     digitalWrite(led,HIGH);
+    //     delay(500);
+    // }
+    // digitalWrite(led,LOW);
+    // delay(150);
+
+    float h = dht.readHumidity();
+    float t = dht.readTemperature();
+    h = (float)((int)roundf(h * 100)) / 100;  // Làm tròn đến số thập phân thứ hai cho humidity
+    t = (float)((int)roundf(t * 100)) / 100;
+    int sensorValue = analogRead(MQ7_ANALOG_PIN);
+    int smoke = map(sensorValue, 0, 1023, 0, 100);
+
+    StaticJsonDocument<200> sensorData;
+
+    sensorData["temper"] = t;
+    sensorData["humid"] = h;
+    sensorData["gas"] = smoke;
+    char jsonBuffer[256];
+    serializeJson(sensorData, jsonBuffer);
+
+    if (millis() - lastPostTime >= post_interval) {
+      client.publish(topic, jsonBuffer);
+    lastPostTime = millis();
+  }
+}
